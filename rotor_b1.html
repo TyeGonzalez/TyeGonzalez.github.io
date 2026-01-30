@@ -660,6 +660,9 @@ const els = {
   renderBtn: document.getElementById("renderBtn"),
 };
 
+const plotEl = document.getElementById("plot");
+const plotConfig = { responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage", "lasso3d", "select3d"], scrollZoom: true }; 
+
 function setStatus(s) { els.status.textContent = s; }
 
 function getQuantity() {
@@ -815,6 +818,8 @@ function renderPlot() {
     return;
   }
 
+  const savedCamera = plotEl && plotEl._fullLayout && plotEl._fullLayout.scene ? plotEl._fullLayout.scene.camera : null;
+
   const rho = payload.rho; // mm
   const z = payload.z;     // mm
   const phi = payload.phi; // deg
@@ -936,10 +941,13 @@ function renderPlot() {
       yaxis: {title: "y (mm)"},
       zaxis: {title: "z (mm)"},
       aspectmode: "data"
-    }
+    },
+    uirevision: "rotor-b1"
   };
 
-  Plotly.react("plot", [trace], layout, {responsive: true});
+  Plotly.react(plotEl, [trace], layout, plotConfig).then(() => {
+    if (savedCamera) Plotly.relayout(plotEl, {"scene.camera": savedCamera});
+  });
   setStatus(`Rendered ${X.length} points (stride ${stride}).\nkey=${payload._key || "-"}`);
 }
 
@@ -964,7 +972,7 @@ els.segKpi.textContent = `Segments: ${els.nseg.value}`;
 els.cacheKpi.textContent = `Cache: ${els.cacheToggle.checked ? "on" : "off"}`;
 
 // initial empty plot
-Plotly.newPlot("plot", [], {title: {text:"No data yet. Click 'Recompute field'."}}, {responsive:true});
+Plotly.newPlot(plotEl, [], {title: {text:"No data yet. Click 'Recompute field'."}, uirevision: "rotor-b1"}, plotConfig);
 </script>
 </body>
 </html>
