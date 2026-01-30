@@ -955,18 +955,27 @@ function renderPlot() {
 
   const colorMap = getColorScale(colorscale);
 
+   // axis extents and aspect: keep uniform scale; give z a small boost for visibility
+  const rSpan = Math.max(Math.abs(r0), Math.abs(r1));
+  const zSpan = Math.abs(z1 - z0);
+  const safeR = rSpan > 0 ? rSpan : 1;
+  const boxBase = 140;
+  const boxHeight = boxBase * (zSpan / (2*safeR)) * 1.15; // 15% taller for z
+  const zMinAxis = Math.min(z0, z1);
+  const zMaxAxis = Math.max(z0, z1);
+
   const option = {
     title: {text: title, left: "center", top: 10},
     tooltip: {show: true, formatter: p => `x:${fmt(p.value[0])} y:${fmt(p.value[1])} z:${fmt(p.value[2])} v:${fmt(p.value[3])}`},
     grid3D: {
-      boxWidth: 120,
-      boxDepth: 120,
-      boxHeight: 120,
+      boxWidth: boxBase,
+      boxDepth: boxBase,
+      boxHeight: boxHeight,
       viewControl: currentView || {projection: "perspective", autoRotate: false, zoomSensitivity: 1.2},
     },
-    xAxis3D: {name: "x (mm)"},
-    yAxis3D: {name: "y (mm)"},
-    zAxis3D: {name: "z (mm)"},
+    xAxis3D: {name: "x (mm)", min: -rSpan, max: rSpan},
+    yAxis3D: {name: "y (mm)", min: -rSpan, max: rSpan},
+    zAxis3D: {name: "z (mm)", min: zMinAxis, max: zMaxAxis},
     visualMap: {
       type: "continuous",
       dimension: 3,
@@ -983,6 +992,7 @@ function renderPlot() {
       data,
       symbolSize: markerSize,
       itemStyle: {opacity},
+      emphasis: {itemStyle: {opacity}},
     }]
   };
 
@@ -1015,7 +1025,7 @@ els.cacheKpi.textContent = `Cache: ${els.cacheToggle.checked ? "on" : "off"}`;
 chart = echarts.init(plotEl, null, {renderer: "webgl", useDirtyRect: true});
 chart.setOption({
   title: {text: "No data yet. Click 'Recompute field'.", left: "center", top: 10},
-  grid3D: {viewControl: {projection: "perspective"}},
+  grid3D: {viewControl: {projection: "perspective"}, boxWidth: 140, boxDepth: 140, boxHeight: 140},
   xAxis3D: {name: "x (mm)"},
   yAxis3D: {name: "y (mm)"},
   zAxis3D: {name: "z (mm)"},
