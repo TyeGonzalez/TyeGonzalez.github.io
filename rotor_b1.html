@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>3D Rotor Inhomogeneity Renderer (Client-side)</title>
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 0; }
+    .wrap { max-width: 1400px; margin: 0 auto; padding: 14px; }
+    h2 { margin: 0 0 6px 0; font-size: 20px; }
+    .sub { opacity: 0.8; margin: 0 0 12px 0; }
+    .row { display: flex; gap: 12px; align-items: flex-start; }
+    .panel { width: 330px; border: 1px solid rgba(128,128,128,0.35); border-radius: 12px; padding: 12px; }
+    .panel h3 { margin: 0 0 8px 0; font-size: 14px; opacity: 0.9; }
+    label { display: block; font-size: 12px; opacity: 0.85; margin-top: 10px; }
+    select, input[type="number"] { width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(128,128,128,0.35); background: transparent; }
+    input[type="range"] { width: 100%; }
+    .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .btn { width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(128,128,128,0.35); background: rgba(128,128,128,0.10); cursor: pointer; margin-top: 10px; }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .status { margin-top: 10px; font-size: 12px; opacity: 0.85; white-space: pre-wrap; }
+    .graphPanel { flex: 1; min-width: 420px; }
+    #plot { height: 74vh; border: 1px solid rgba(128,128,128,0.25); border-radius: 12px; overflow: hidden; }
+    .radioRow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+    .radioRow label { margin-top: 0; display: inline-flex; gap: 6px; align-items: center; opacity: 0.9; }
+    .tiny { font-size: 11px; opacity: 0.8; line-height: 1.3; }
+    .hr { height: 1px; background: rgba(128,128,128,0.25); margin: 12px 0; }
+    .kpi { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+    .kpi > div { font-size: 11px; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(128,128,128,0.25); opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>3D Rotor Inhomogeneity Renderer (Client-side)</h2>
+    <div class="sub">Pure HTML/JS version of the Dash app: computes the complex B-field on a (ρ,z,φ) grid, converts to B1+ using tilted B0 (θ=54.7°), then renders Plotly 3D scatter.</div>
+
+    <div class="row">
+      <div class="panel">
+        <h3>Field computation</h3>
+
+        <label for="probe">Probe / rotor preset</label>
+        <select id="probe">
+          <option value="3p2_800">3p2_800</option>
+          <option value="1p9">1p9</option>
+          <option value="1p3" selected>1p3</option>
+          <option value="0p7">0p7</option>
+        </select>
+
+        <label for="freq">RF frequency (MHz)</label>
+        <input id="freq" type="number" value="800" step="1" />
+
+        <label for="nseg">Wire discretization nseg: <span id="nsegVal">240</span></label>
+        <input id="nseg" type="range" min="80" max="800" step="20" value="240" />
+
+        <div class="hr"></div>
+
+        <label>Grid resolution</label>
+        <div class="grid3">
+          <div>
+            <label for="nrho" style="margin-top:0">nrho</label>
+            <input id="nrho" type="number" value="24" min="6" step="1"/>
+          </div>
+          <div>
+            <label for="nz" style="margin-top:0">nz</label>
+            <input id="nz" type="number" value="28" min="6" step="1"/>
+          </div>
+          <div>
+            <label for="nphi" style="margin-top:0">nphi</label>
+            <input id="nphi" type="number" value="48" min="12" step="1"/>
+          </div>
+        </div>
+
+        <button id="computeBtn" class="btn">Recompute field</button>
+
+        <div class="kpi">
+          <div id="ptsKpi">Points: -</div>
+          <div id="segKpi">Segments: -</div>
+          <div id="cacheKpi">Cache: off</div>
+        </div>
+
+        <label style="margin-top:10px">
+          <input id="cacheToggle" type="checkbox" />
+          Enable cache (IndexedDB)
+        </label>
+        <button id="clearCacheBtn" class="btn" style="margin-top:6px">Clear cache</button>
+
+        <div class="status" id="status">Ready.</div>
+        <div class="tiny" style="margin-top:10px">
+          Notes:
+          <ul style="margin:6px 0 0 18px; padding:0">
+            <li>Uses the same coil geometry + retarded-potential summation as the Python version.</li>
+            <li>Compression factor is computed with a small Bessel/Brent implementation (m=0 case).</li>
+            <li>Large grids can take a while in the browser; start with defaults.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="graphPanel">
+        <div class="panel" style="width: auto; margin-bottom:10px;">
+          <h3>Render controls</h3>
+
+          <label>Render quantity</label>
+          <div class="radioRow" id="quantity">
+            <label><input type="radio" name="q" value="mag_rel" checked /> |B1+| / |B1+ (center)|</label>
+            <label><input type="radio" name="q" value="phase_err" /> phase error (deg)</label>
+            <label><input type="radio" name="q" value="abs_phase_err" /> |phase error| (deg)</label>
+            <label><input type="radio" name="q" value="re" /> Re(B1+)</label>
+            <label><input type="radio" name="q" value="im" /> Im(B1+)</label>
+          </div>
+
+          <div class="grid2" style="margin-top:8px;">
+            <div>
+              <label for="markerSize" style="margin-top:0">Marker size: <span id="markerSizeVal">3</span></label>
+              <input id="markerSize" type="range" min="1" max="8" step="1" value="3" />
+            </div>
+            <div>
+              <label for="opacity" style="margin-top:0">Opacity: <span id="opacityVal">0.65</span></label>
+              <input id="opacity" type="range" min="0.05" max="1.0" step="0.05" value="0.65" />
+            </div>
+          </div>
+
+          <label for="colorscale">Colormap</label>
+          <select id="colorscale">
+            <option>Viridis</option><option>Inferno</option><option>Plasma</option><option>Magma</option>
+            <option>Cividis</option><option>Turbo</option><option>RdBu</option><option>Jet</option>
+          </select>
+
+          <div class="hr"></div>
+
+          <label>Filter ranges (no recompute)</label>
+
+          <label for="rhoMin">ρ range (mm)</label>
+          <div class="grid2" style="margin-top:4px;">
+            <input id="rhoMin" type="number" step="0.001" />
+            <input id="rhoMax" type="number" step="0.001" />
+          </div>
+
+          <label for="zMin">z range (mm)</label>
+          <div class="grid2" style="margin-top:4px;">
+            <input id="zMin" type="number" step="0.001" />
+            <input id="zMax" type="number" step="0.001" />
+          </div>
+
+          <label for="phiMin">φ range (deg, step 30)</label>
+          <div class="grid2" style="margin-top:4px;">
+            <input id="phiMin" type="number" step="30" min="0" max="360" />
+            <input id="phiMax" type="number" step="30" min="0" max="360" />
+          </div>
+
+          <button id="renderBtn" class="btn">Render</button>
+        </div>
+
+        <div id="plot"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ========= Small utilities ========= */
+const clamp = (x, a, b) => Math.min(Math.max(x, a), b);
+const wrapToPi = (x) => {
+  // wrap to (-pi, pi]
+  const twopi = 2*Math.PI;
+  x = (x + Math.PI) % twopi;
+  if (x < 0) x += twopi;
+  return x - Math.PI;
+};
+
+function fmt(n) {
+  if (!Number.isFinite(n)) return String(n);
+  const abs = Math.abs(n);
+  if (abs === 0) return "0";
+  if (abs >= 1000 || abs < 0.01) return n.toExponential(3);
+  return n.toFixed(3);
+}
+
+/* ========= IndexedDB cache ========= */
+const DB_NAME = "rotorB1Cache";
+const DB_VERSION = 1;
+const STORE = "fields";
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onerror = () => reject(req.error);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+  });
+}
+
+async function cacheGet(key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const st = tx.objectStore(STORE);
+    const req = st.get(key);
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => resolve(req.result || null);
+  });
+}
+
+async function cachePut(key, value) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const st = tx.objectStore(STORE);
+    const req = st.put(value, key);
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => resolve(true);
+  });
+}
+
+async function cacheClear() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const st = tx.objectStore(STORE);
+    const req = st.clear();
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => resolve(true);
+  });
+}
+
+async function sha256Hex(str) {
+  const bytes = new TextEncoder().encode(str);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const arr = Array.from(new Uint8Array(digest));
+  return arr.map(b => b.toString(16).padStart(2,"0")).join("").slice(0,16);
+}
+
+/* ========= Probe defaults ========= */
+function defaultVolume(probe) {
+  if (probe === "3p2_800") return { vr: 2.6/2, zmin: -8.0, zmax: 8.0 };
+  if (probe === "1p9")     return { vr: 1.5/2, zmin: -6.0, zmax: 6.0 };
+  if (probe === "1p3")     return { vr: 0.9/2, zmin: -2.5, zmax: 2.5 };
+  if (probe === "0p7")     return { vr: 0.5/2, zmin: -2.0, zmax: 2.0 };
+  return { vr: 1.0, zmin: -3.0, zmax: 3.0 };
+}
+
+/* ========= Worker: heavy computation ========= */
+function makeWorker() {
+  const workerCode = `
+  // --- Worker starts ---
+  const TWO_PI = 2*Math.PI;
+
+  function coilData(probe, freqMHz) {
+    let dia_mm, ll_mm, nt;
+    if (probe === "3p2_800") { dia_mm = 3.45 + 0.5; ll_mm = 7.9; nt = 7; }
+    else if (probe === "1p9") { dia_mm = 2.12 + 0.5; ll_mm = 5.8; nt = 7; }
+    else if (probe === "1p3") { dia_mm = 1.5 + 0.2; ll_mm = 2.5; nt = 10; }
+    else if (probe === "0p7") { dia_mm = 0.9 + 0.2; ll_mm = 1.9; nt = 8; }
+    else throw new Error("Unknown probe: " + probe);
+
+    const a = (dia_mm / 2.0) * 1e-3;
+    const length_m = ll_mm * 1e-3;
+    const pitch_m = length_m / nt;
+    const c0 = 3e8;
+    const f0 = freqMHz * 1e6;
+    const lambda0 = c0 / f0;
+    return { length_m, radius_m: a, turns: nt, pitch_m, frequency_hz: f0, lambda0_m: lambda0 };
+  }
+
+  // Modified Bessel I0/I1 and K0/K1 approximations (Cephes-like)
+  // Good enough for the m=0 use here.
+  function I0(x) {
+    const ax = Math.abs(x);
+    if (ax < 3.75) {
+      const y = (x/3.75); const y2 = y*y;
+      return 1.0 + y2*(3.5156229 + y2*(3.0899424 + y2*(1.2067492 + y2*(0.2659732 + y2*(0.0360768 + y2*0.0045813)))));
+    } else {
+      const y = 3.75/ax;
+      return (Math.exp(ax)/Math.sqrt(ax)) * (0.39894228 + y*(0.01328592 + y*(0.00225319 + y*(-0.00157565 + y*(0.00916281 + y*(-0.02057706 + y*(0.02635537 + y*(-0.01647633 + y*0.00392377))))))));
+    }
+  }
+  function I1(x) {
+    const ax = Math.abs(x);
+    let ans;
+    if (ax < 3.75) {
+      const y = (x/3.75); const y2 = y*y;
+      ans = ax*(0.5 + y2*(0.87890594 + y2*(0.51498869 + y2*(0.15084934 + y2*(0.02658733 + y2*(0.00301532 + y2*0.00032411))))));
+    } else {
+      const y = 3.75/ax;
+      ans = (Math.exp(ax)/Math.sqrt(ax)) * (0.39894228 + y*(-0.03988024 + y*(-0.00362018 + y*(0.00163801 + y*(-0.01031555 + y*(0.02282967 + y*(-0.02895312 + y*(0.01787654 - y*0.00420059))))))));
+    }
+    return x < 0 ? -ans : ans;
+  }
+  function K0(x) {
+    const ax = x;
+    if (ax <= 0) return Infinity;
+    if (ax <= 2.0) {
+      const y = (ax*ax)/4.0;
+      return (-Math.log(ax/2.0) * I0(ax)) + (-0.57721566 + y*(0.42278420 + y*(0.23069756 + y*(0.03488590 + y*(0.00262698 + y*(0.00010750 + y*0.00000740))))));
+    } else {
+      const y = 2.0/ax;
+      return (Math.exp(-ax)/Math.sqrt(ax)) * (1.25331414 + y*(-0.07832358 + y*(0.02189568 + y*(-0.01062446 + y*(0.00587872 + y*(-0.00251540 + y*0.00053208))))));
+    }
+  }
+  function K1(x) {
+    const ax = x;
+    if (ax <= 0) return Infinity;
+    let ans;
+    if (ax <= 2.0) {
+      const y = (ax*ax)/4.0;
+      ans = (Math.log(ax/2.0) * I1(ax)) + (1.0/ax) * (1.0 + y*(0.15443144 + y*(-0.67278579 + y*(-0.18156897 + y*(-0.01919402 + y*(-0.00110404 + y*(-0.00004686)))))));
+    } else {
+      const y = 2.0/ax;
+      ans = (Math.exp(-ax)/Math.sqrt(ax)) * (1.25331414 + y*(0.23498619 + y*(-0.03655620 + y*(0.01504268 + y*(-0.00780353 + y*(0.00325614 + y*(-0.00068245)))))));
+    }
+    return ans;
+  }
+
+  function compressionFactor(coil) {
+    const a = coil.radius_m;
+    const D = coil.pitch_m;
+    const lambda0 = coil.lambda0_m;
+
+    const tanpsi = D / (2.0 * Math.PI * a);
+    const cotpsi = 1.0 / tanpsi;
+    const m = 0;
+
+    function hmasearch(x) {
+      const Im = I0(x);
+      const Im1 = I1(x);
+      const Km = K0(x);
+      const Km1 = K1(x);
+
+      const A = Im * Km;
+      const B = Im1 * Km1;
+      const C = Math.sqrt(x*x + (4.0*Math.PI*Math.PI*a*a)/(lambda0*lambda0));
+      const F1 = (x + m*C*cotpsi/x) * Math.sqrt(A / B);
+      const F2 = (2.0*Math.PI*a*cotpsi/lambda0);
+      return F1 - F2;
+    }
+
+    // Brent-like bracketing + bisection (robust enough here)
+    let lo = 1e-3, hi = 100.0;
+    let flo = hmasearch(lo), fhi = hmasearch(hi);
+    if (!Number.isFinite(flo) || !Number.isFinite(fhi) || flo*fhi > 0) {
+      return 1.0;
+    }
+    for (let it=0; it<120; it++) {
+      const mid = 0.5*(lo+hi);
+      const fmid = hmasearch(mid);
+      if (!Number.isFinite(fmid)) return 1.0;
+      if (Math.abs(fmid) < 1e-10 || (hi-lo) < 1e-8) {
+        const hm = mid / a;
+        const rm = 1.0 / hm;
+        const fac = Math.sqrt(1.0 + (lambda0*lambda0)/(4.0*Math.PI*Math.PI*rm*rm));
+        return fac;
+      }
+      if (flo*fmid <= 0) { hi = mid; fhi = fmid; }
+      else { lo = mid; flo = fmid; }
+    }
+    const root = 0.5*(lo+hi);
+    const hm = root / a;
+    const rm = 1.0 / hm;
+    return Math.sqrt(1.0 + (lambda0*lambda0)/(4.0*Math.PI*Math.PI*rm*rm));
+  }
+
+  function wireGeometry(coil, nseg) {
+    const r = coil.radius_m;
+    const lcoil = coil.length_m;
+    const nt = coil.turns;
+
+    const lwire = TWO_PI*r*nt;
+    const dl = lwire / (nseg - 1);
+    const ss = new Float64Array(nseg);
+    const xs = new Float64Array(nseg);
+    const ys = new Float64Array(nseg);
+    const zs = new Float64Array(nseg);
+    const xsb = new Float64Array(nseg);
+    const ysb = new Float64Array(nseg);
+    const zsb = new Float64Array(nseg);
+    const drsx = new Float64Array(nseg);
+    const drsy = new Float64Array(nseg);
+    const drsxb = new Float64Array(nseg);
+    const drsyb = new Float64Array(nseg);
+
+    const dphi = TWO_PI*nt / (nseg - 1);
+    const drsz = lcoil / lwire;
+    const drszb = -lcoil / lwire;
+
+    for (let i=0; i<nseg; i++) {
+      const w = i+1;
+      const s = w*dl;
+      ss[i] = s;
+      const phi = (w - 1.0) * dphi;
+
+      const c = Math.cos(phi), si = Math.sin(phi);
+      xs[i] = r*c;
+      ys[i] = r*si;
+      zs[i] = -lcoil/2.0 + lcoil*(w-1.0)/(nseg-1.0);
+
+      xsb[i] = r*c;
+      ysb[i] = -r*si;
+      zsb[i] = lcoil/2.0 - lcoil*(w-1.0)/(nseg-1.0);
+
+      drsx[i] = -si;
+      drsy[i] = c;
+
+      drsxb[i] = -si;
+      drsyb[i] = -c;
+    }
+
+    return { ss, xs, ys, zs, xsb, ysb, zsb, drsx, drsy, drsz, drsxb, drsyb, drszb, lwire, lcoil, r, nt };
+  }
+
+  function linspace(a, b, n, endpoint=true) {
+    const out = new Float64Array(n);
+    if (n === 1) { out[0] = a; return out; }
+    const div = endpoint ? (n-1) : n;
+    const step = (b-a)/div;
+    for (let i=0; i<n; i++) out[i] = a + step*i;
+    return out;
+  }
+
+  function deg2rad(deg) { return deg*Math.PI/180.0; }
+
+  function computeB1Plus(probe, freqMHz, vr_mm, zmin_mm, zmax_mm, nrho, nz, nphi, nseg, progressEvery=4000) {
+    const coil = coilData(probe, freqMHz);
+    const wcomp = compressionFactor(coil);
+
+    const eps0 = 8.86e-12;
+    const mu0 = 1.256e-6;
+    const f0 = coil.frequency_hz;
+    const om0 = TWO_PI*f0;
+    const I0amp = 1.0;
+    const I0f1 = mu0*I0amp/(4.0*Math.PI);
+
+    const epsmat = eps0 * 1.0;
+    const epsmu0 = Math.sqrt(epsmat*mu0);
+
+    const c0 = 3e8;
+    const geom = wireGeometry(coil, nseg);
+    const ceff = c0 / wcomp;
+    const cwire = (geom.lwire / geom.lcoil) * ceff;
+    const cc = 1.0 / cwire;
+
+    // Grid
+    const rho = linspace(0.0, vr_mm, nrho, true);     // mm
+    const z = linspace(zmin_mm, zmax_mm, nz, true);   // mm
+    const phi = linspace(0.0, 360.0, nphi, false);    // deg
+
+    // Convert to meters/radians for compute
+    const rho_m = new Float64Array(nrho);
+    for (let i=0;i<nrho;i++) rho_m[i] = rho[i]*1e-3;
+    const z_m = new Float64Array(nz);
+    for (let i=0;i<nz;i++) z_m[i] = z[i]*1e-3;
+    const phi_rad = new Float64Array(nphi);
+    for (let i=0;i<nphi;i++) phi_rad[i] = deg2rad(phi[i]);
+
+    const N = nrho*nphi*nz;
+
+    // Precompute XY for each (rho,phi)
+    const xyX = new Float64Array(nrho*nphi);
+    const xyY = new Float64Array(nrho*nphi);
+    for (let ir=0; ir<nrho; ir++) {
+      const rr = rho_m[ir];
+      for (let ip=0; ip<nphi; ip++) {
+        const c = Math.cos(phi_rad[ip]);
+        const s = Math.sin(phi_rad[ip]);
+        const k = ir*nphi + ip;
+        xyX[k] = rr*c;
+        xyY[k] = rr*s;
+      }
+    }
+
+    const omsq = om0*epsmu0;
+
+    function computeRealAtTime(t, outBx, outBy, outBz) {
+      // out arrays length N
+      let idx = 0;
+      for (let ir=0; ir<nrho; ir++) {
+        for (let ip=0; ip<nphi; ip++) {
+          const k = ir*nphi + ip;
+          const x = xyX[k];
+          const y = xyY[k];
+          for (let iz=0; iz<nz; iz++) {
+            const zc = z_m[iz];
+
+            let bx = 0.0, by = 0.0, bz = 0.0;
+
+            // Forward segments
+            for (let j=0; j<nseg; j++) {
+              const RRx = geom.xs[j] - x;
+              const RRy = geom.ys[j] - y;
+              const RRz = geom.zs[j] - zc;
+              const RRdist = Math.sqrt(RRx*RRx + RRy*RRy + RRz*RRz);
+              const Ts = t - cc*geom.ss[j] - epsmu0*RRdist;
+              const omTs = om0*Ts;
+
+              const RRdis2 = RRdist*RRdist;
+              const RRdis3 = RRdis2*RRdist;
+
+              const b1 = omsq*Math.sin(omTs)/RRdis2;
+              const b2 = Math.cos(omTs)/RRdis3;
+              const b12f = I0f1*(b1 - b2);
+
+              const RRxdrs_x = RRy*geom.drsz - RRz*geom.drsy[j];
+              const RRxdrs_y = RRz*geom.drsx[j] - RRx*geom.drsz;
+              const RRxdrs_z = RRx*geom.drsy[j] - RRy*geom.drsx[j];
+
+              bx += b12f*RRxdrs_x;
+              by += b12f*RRxdrs_y;
+              bz += b12f*RRxdrs_z;
+            }
+
+            // Backward segments
+            for (let j=0; j<nseg; j++) {
+              const RRxb = geom.xsb[j] - x;
+              const RRyb = geom.ysb[j] - y;
+              const RRzb = geom.zsb[j] - zc;
+              const RRdistb = Math.sqrt(RRxb*RRxb + RRyb*RRyb + RRzb*RRzb);
+              const Tsb = t - cc*geom.ss[j] - epsmu0*RRdistb;
+              const omTsb = om0*Tsb;
+
+              const RRdis2b = RRdistb*RRdistb;
+              const RRdis3b = RRdis2b*RRdistb;
+
+              const b1b = omsq*Math.sin(omTsb)/RRdis2b;
+              const b2b = Math.cos(omTsb)/RRdis3b;
+              const b12b = -I0f1*(b1b - b2b);
+
+              const RRxdrs_xb = RRyb*geom.drszb - RRzb*geom.drsyb[j];
+              const RRxdrs_yb = RRzb*geom.drsxb[j] - RRxb*geom.drszb;
+              const RRxdrs_zb = RRxb*geom.drsyb[j] - RRyb*geom.drsxb[j];
+
+              bx += b12b*RRxdrs_xb;
+              by += b12b*RRxdrs_yb;
+              bz += b12b*RRxdrs_zb;
+            }
+
+            outBx[idx] = bx;
+            outBy[idx] = by;
+            outBz[idx] = bz;
+            idx++;
+
+            if (idx % progressEvery === 0) postMessage({type:"progress", idx, N});
+          }
+        }
+      }
+    }
+
+    // Two time points to build complex field: B = B(t0) - i B(t1)
+    const t0 = 0.0;
+    const t1 = 1.0 / (4.0 * f0);
+
+    const bx0 = new Float64Array(N), by0 = new Float64Array(N), bz0 = new Float64Array(N);
+    const bx1 = new Float64Array(N), by1 = new Float64Array(N), bz1 = new Float64Array(N);
+
+    postMessage({type:"progressPhase", phase:"t0"});
+    computeRealAtTime(t0, bx0, by0, bz0);
+    postMessage({type:"progressPhase", phase:"t1"});
+    computeRealAtTime(t1, bx1, by1, bz1);
+
+    // Convert to B1+ (complex) directly, using:
+    // B1+ = (Bx + i(c*By - s*Bz))/sqrt(2), where Bx = bx0 - i bx1, etc.
+    const theta = 54.7*Math.PI/180.0;
+    const c = Math.cos(theta), s = Math.sin(theta);
+    const invSqrt2 = 1.0/Math.sqrt(2.0);
+
+    const b1re = new Float64Array(N);
+    const b1im = new Float64Array(N);
+
+    for (let i=0; i<N; i++) {
+      // Bx: re=bx0, im=-bx1
+      // By: re=by0, im=-by1
+      // Bz: re=bz0, im=-bz1
+      // B1p_re = (bx0 + c*by1 - s*bz1)/sqrt2
+      // B1p_im = (-bx1 + c*by0 - s*bz0)/sqrt2
+      b1re[i] = (bx0[i] + c*by1[i] - s*bz1[i]) * invSqrt2;
+      b1im[i] = (-bx1[i] + c*by0[i] - s*bz0[i]) * invSqrt2;
+    }
+
+    // Return flat arrays in index order: ((ir*nphi)+ip)*nz + iz? NO:
+    // Our computeRealAtTime loops (ir, ip, iz) and increments idx in that order,
+    // so idx corresponds to (ir, ip, iz) with iz as the fastest axis.
+    // We'll keep that and document it to the main thread.
+    return { probe, freqMHz, vr_mm, zmin_mm, zmax_mm, nrho, nz, nphi, nseg, rho, z, phi, b1re, b1im };
+  }
+
+  onmessage = async (ev) => {
+    const msg = ev.data;
+    if (msg.type !== "compute") return;
+    try {
+      const {probe, freqMHz, vr_mm, zmin_mm, zmax_mm, nrho, nz, nphi, nseg} = msg.cfg;
+      const out = computeB1Plus(probe, freqMHz, vr_mm, zmin_mm, zmax_mm, nrho, nz, nphi, nseg);
+      postMessage({type:"done", out}, [out.rho.buffer, out.z.buffer, out.phi.buffer, out.b1re.buffer, out.b1im.buffer]);
+    } catch (e) {
+      postMessage({type:"error", error: String(e && e.message ? e.message : e)});
+    }
+  };
+  // --- Worker ends ---
+  `;
+  const blob = new Blob([workerCode], {type: "text/javascript"});
+  const url = URL.createObjectURL(blob);
+  return new Worker(url);
+}
+
+/* ========= App state ========= */
+let worker = null;
+let payload = null; // latest computed field payload (typed arrays)
+
+const els = {
+  probe: document.getElementById("probe"),
+  freq: document.getElementById("freq"),
+  nseg: document.getElementById("nseg"),
+  nsegVal: document.getElementById("nsegVal"),
+  nrho: document.getElementById("nrho"),
+  nz: document.getElementById("nz"),
+  nphi: document.getElementById("nphi"),
+  computeBtn: document.getElementById("computeBtn"),
+  status: document.getElementById("status"),
+  ptsKpi: document.getElementById("ptsKpi"),
+  segKpi: document.getElementById("segKpi"),
+  cacheKpi: document.getElementById("cacheKpi"),
+  cacheToggle: document.getElementById("cacheToggle"),
+  clearCacheBtn: document.getElementById("clearCacheBtn"),
+
+  markerSize: document.getElementById("markerSize"),
+  markerSizeVal: document.getElementById("markerSizeVal"),
+  opacity: document.getElementById("opacity"),
+  opacityVal: document.getElementById("opacityVal"),
+  colorscale: document.getElementById("colorscale"),
+
+  rhoMin: document.getElementById("rhoMin"),
+  rhoMax: document.getElementById("rhoMax"),
+  zMin: document.getElementById("zMin"),
+  zMax: document.getElementById("zMax"),
+  phiMin: document.getElementById("phiMin"),
+  phiMax: document.getElementById("phiMax"),
+
+  renderBtn: document.getElementById("renderBtn"),
+};
+
+function setStatus(s) { els.status.textContent = s; }
+
+function getQuantity() {
+  const r = document.querySelector('input[name="q"]:checked');
+  return r ? r.value : "mag_rel";
+}
+
+function updateDefaultsForProbe() {
+  const {vr, zmin, zmax} = defaultVolume(els.probe.value);
+  els.rhoMin.value = fmt(0.0);
+  els.rhoMax.value = fmt(vr);
+  els.zMin.value = fmt(zmin);
+  els.zMax.value = fmt(zmax);
+  els.phiMin.value = "0";
+  els.phiMax.value = "360";
+
+  const nrho = parseInt(els.nrho.value, 10);
+  const nz = parseInt(els.nz.value, 10);
+  const nphi = parseInt(els.nphi.value, 10);
+  els.ptsKpi.textContent = `Points: ${nrho*nz*nphi}`;
+}
+
+els.probe.addEventListener("change", updateDefaultsForProbe);
+
+els.nseg.addEventListener("input", () => {
+  els.nsegVal.textContent = els.nseg.value;
+  els.segKpi.textContent = `Segments: ${els.nseg.value}`;
+});
+
+els.nrho.addEventListener("input", updateDefaultsForProbe);
+els.nz.addEventListener("input", updateDefaultsForProbe);
+els.nphi.addEventListener("input", updateDefaultsForProbe);
+
+els.markerSize.addEventListener("input", () => els.markerSizeVal.textContent = els.markerSize.value);
+els.opacity.addEventListener("input", () => els.opacityVal.textContent = els.opacity.value);
+
+els.cacheToggle.addEventListener("change", () => {
+  els.cacheKpi.textContent = `Cache: ${els.cacheToggle.checked ? "on" : "off"}`;
+});
+
+els.clearCacheBtn.addEventListener("click", async () => {
+  try {
+    await cacheClear();
+    setStatus("Cache cleared.");
+  } catch (e) {
+    setStatus("Cache clear failed: " + String(e));
+  }
+});
+
+/* ========= Compute ========= */
+async function computeField() {
+  const probe = els.probe.value;
+  const freqMHz = parseFloat(els.freq.value);
+  const nseg = parseInt(els.nseg.value, 10);
+  const nrho = parseInt(els.nrho.value, 10);
+  const nz = parseInt(els.nz.value, 10);
+  const nphi = parseInt(els.nphi.value, 10);
+
+  const {vr, zmin, zmax} = defaultVolume(probe);
+  const cfg = {probe, freqMHz, vr_mm: vr, zmin_mm: zmin, zmax_mm: zmax, nrho, nz, nphi, nseg};
+
+  const key = await sha256Hex(JSON.stringify(cfg));
+  const useCache = els.cacheToggle.checked;
+
+  els.computeBtn.disabled = true;
+  els.renderBtn.disabled = true;
+
+  setStatus(`Computing field...\nkey=${key}\nThis runs in a Web Worker.`);
+
+  // Try cache
+  if (useCache) {
+    try {
+      const cached = await cacheGet(key);
+      if (cached && cached.b1re && cached.b1im) {
+        payload = {
+          ...cfg,
+          rho: new Float64Array(cached.rho),
+          z: new Float64Array(cached.z),
+          phi: new Float64Array(cached.phi),
+          b1re: new Float64Array(cached.b1re),
+          b1im: new Float64Array(cached.b1im),
+          _key: key,
+        };
+        setStatus(`Loaded from cache.\nkey=${key}`);
+        els.computeBtn.disabled = false;
+        els.renderBtn.disabled = false;
+        return;
+      }
+    } catch (e) {
+      setStatus(`Cache lookup failed, computing anyway.\n${String(e)}`);
+    }
+  }
+
+  // Compute in worker
+  if (worker) worker.terminate();
+  worker = makeWorker();
+
+  await new Promise((resolve, reject) => {
+    worker.onmessage = async (ev) => {
+      const msg = ev.data;
+      if (msg.type === "progress") {
+        const pct = 100.0*msg.idx/msg.N;
+        setStatus(`Computing field... ${pct.toFixed(1)}%`);
+      } else if (msg.type === "progressPhase") {
+        setStatus(`Computing field... phase ${msg.phase}`);
+      } else if (msg.type === "error") {
+        reject(new Error(msg.error));
+      } else if (msg.type === "done") {
+        payload = msg.out;
+        payload._key = key;
+        // Persist cache as raw ArrayBuffers (structured clone)
+        if (useCache) {
+          try {
+            await cachePut(key, {
+              rho: payload.rho.buffer,
+              z: payload.z.buffer,
+              phi: payload.phi.buffer,
+              b1re: payload.b1re.buffer,
+              b1im: payload.b1im.buffer,
+              meta: cfg,
+              savedAt: Date.now()
+            });
+          } catch (e) {
+            // ignore cache write errors
+          }
+        }
+        resolve(true);
+      }
+    };
+    worker.onerror = (e) => reject(e.error || e.message || e);
+    worker.postMessage({type:"compute", cfg});
+  });
+
+  setStatus(`Field ready.\nkey=${key}\nPress Render to update the plot.`);
+  els.computeBtn.disabled = false;
+  els.renderBtn.disabled = false;
+}
+
+/* ========= Render ========= */
+function findNearestIndex(arr, target) {
+  let best = 0;
+  let bestd = Infinity;
+  for (let i=0;i<arr.length;i++) {
+    const d = Math.abs(arr[i] - target);
+    if (d < bestd) { bestd = d; best = i; }
+  }
+  return best;
+}
+
+function renderPlot() {
+  if (!payload) {
+    setStatus("No data yet. Click 'Recompute field'.");
+    return;
+  }
+
+  const rho = payload.rho; // mm
+  const z = payload.z;     // mm
+  const phi = payload.phi; // deg
+  const b1re = payload.b1re; // flat idx order: (ir, ip, iz) with iz fastest
+  const b1im = payload.b1im;
+
+  const nrho = payload.nrho, nz = payload.nz, nphi = payload.nphi;
+
+  // filter ranges
+  const r0 = parseFloat(els.rhoMin.value), r1 = parseFloat(els.rhoMax.value);
+  const z0 = parseFloat(els.zMin.value),  z1 = parseFloat(els.zMax.value);
+  const p0 = parseFloat(els.phiMin.value), p1 = parseFloat(els.phiMax.value);
+
+  const quantity = getQuantity();
+  const markerSize = parseInt(els.markerSize.value, 10);
+  const opacity = parseFloat(els.opacity.value);
+  const colorscale = els.colorscale.value;
+
+  // center point indices: nearest to rho=0,z=0,phi=0
+  const ir0 = findNearestIndex(rho, 0.0);
+  const iz0 = findNearestIndex(z, 0.0);
+  const ip0 = findNearestIndex(phi, 0.0);
+  const idxCenter = ((ir0*nphi + ip0)*nz + iz0);
+  const cre = b1re[idxCenter], cim = b1im[idxCenter];
+  const magc = Math.hypot(cre, cim) || 1.0;
+  const phasec = Math.atan2(cim, cre);
+
+  // Collect points (capped)
+  const X = [];
+  const Y = [];
+  const Z = [];
+  const V = [];
+
+  const maxPoints = 80000;
+
+  // Determine stride for subsampling if needed
+  let estimated = 0;
+  for (let ir=0; ir<nrho; ir++) if (rho[ir] >= r0 && rho[ir] <= r1) {
+    for (let ip=0; ip<nphi; ip++) {
+      const ph = phi[ip];
+      let inPhi = false;
+      if (p0 <= p1) inPhi = (ph >= p0 && ph <= p1);
+      else inPhi = (ph >= p0 || ph <= p1);
+      if (!inPhi) continue;
+      for (let iz=0; iz<nz; iz++) if (z[iz] >= z0 && z[iz] <= z1) estimated++;
+    }
+  }
+  const stride = estimated > maxPoints ? Math.ceil(estimated / maxPoints) : 1;
+
+  let counter = 0;
+  for (let ir=0; ir<nrho; ir++) {
+    const rr = rho[ir];
+    if (rr < r0 || rr > r1) continue;
+    for (let ip=0; ip<nphi; ip++) {
+      const phDeg = phi[ip];
+      let inPhi = false;
+      if (p0 <= p1) inPhi = (phDeg >= p0 && phDeg <= p1);
+      else inPhi = (phDeg >= p0 || phDeg <= p1);
+      if (!inPhi) continue;
+
+      const ph = phDeg * Math.PI/180.0;
+      const c = Math.cos(ph), s = Math.sin(ph);
+      const x = rr * c;
+      const y = rr * s;
+
+      for (let iz=0; iz<nz; iz++) {
+        const zz = z[iz];
+        if (zz < z0 || zz > z1) continue;
+
+        if ((counter % stride) !== 0) { counter++; continue; }
+
+        const idx = ((ir*nphi + ip)*nz + iz);
+        const re = b1re[idx], im = b1im[idx];
+
+        let val;
+        if (quantity === "mag_rel") {
+          val = Math.hypot(re, im) / magc;
+        } else if (quantity === "phase_err" || quantity === "abs_phase_err") {
+          const dp = wrapToPi(Math.atan2(im, re) - phasec);
+          val = dp * 180.0/Math.PI;
+          if (quantity === "abs_phase_err") val = Math.abs(val);
+        } else if (quantity === "re") {
+          val = re;
+        } else {
+          val = im;
+        }
+
+        X.push(x); Y.push(y); Z.push(zz); V.push(val);
+        counter++;
+      }
+    }
+  }
+
+  let title = "";
+  if (quantity === "mag_rel") title = "|B1+| / |B1+ (center)|";
+  else if (quantity === "phase_err") title = "phase error (B1+) vs center (deg)";
+  else if (quantity === "abs_phase_err") title = "|phase error| (B1+) (deg)";
+  else if (quantity === "re") title = "Re(B1+)";
+  else title = "Im(B1+)";
+
+  const trace = {
+    type: "scatter3d",
+    mode: "markers",
+    x: X, y: Y, z: Z,
+    marker: {
+      size: markerSize,
+      opacity: opacity,
+      color: V,
+      colorscale: colorscale,
+      showscale: true,
+    }
+  };
+
+  const layout = {
+    title: {text: title},
+    margin: {l: 0, r: 0, t: 40, b: 0},
+    scene: {
+      xaxis: {title: "x (mm)"},
+      yaxis: {title: "y (mm)"},
+      zaxis: {title: "z (mm)"},
+      aspectmode: "data"
+    }
+  };
+
+  Plotly.react("plot", [trace], layout, {responsive: true});
+  setStatus(`Rendered ${X.length} points (stride ${stride}).\nkey=${payload._key || "-"}`);
+}
+
+/* ========= Wire up ========= */
+els.computeBtn.addEventListener("click", () => computeField().catch(e => {
+  setStatus("Error: " + String(e && e.message ? e.message : e));
+  els.computeBtn.disabled = false;
+  els.renderBtn.disabled = false;
+}));
+
+els.renderBtn.addEventListener("click", renderPlot);
+
+// Also rerender when changing render parameters (fast)
+document.getElementById("quantity").addEventListener("change", () => { if (payload) renderPlot(); });
+els.colorscale.addEventListener("change", () => { if (payload) renderPlot(); });
+els.markerSize.addEventListener("change", () => { if (payload) renderPlot(); });
+els.opacity.addEventListener("change", () => { if (payload) renderPlot(); });
+
+// init
+updateDefaultsForProbe();
+els.segKpi.textContent = `Segments: ${els.nseg.value}`;
+els.cacheKpi.textContent = `Cache: ${els.cacheToggle.checked ? "on" : "off"}`;
+
+// initial empty plot
+Plotly.newPlot("plot", [], {title: {text:"No data yet. Click 'Recompute field'."}}, {responsive:true});
+</script>
+</body>
+</html>
