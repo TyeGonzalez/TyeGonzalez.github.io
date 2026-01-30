@@ -23,7 +23,7 @@
     .btn:disabled { opacity: 0.55; cursor: not-allowed; }
     .status { margin-top: 10px; font-size: 12px; opacity: 0.85; white-space: pre-wrap; }
     .graphPanel { flex: 2 1 480px; min-width: 0; }
-    #plot { height: 74vh; border: 1px solid rgba(128,128,128,0.25); border-radius: 12px; overflow: hidden; width: 100%; }
+    #plot { height: 74vh; border: 1px solid rgba(128,128,128,0.25); border-radius: 12px; overflow: hidden; width: 100%; touch-action: none; }
     .radioRow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
     .radioRow label { margin-top: 0; display: inline-flex; gap: 6px; align-items: center; opacity: 0.9; flex: 1 1 220px; }
     .tiny { font-size: 11px; opacity: 0.8; line-height: 1.3; }
@@ -661,7 +661,14 @@ const els = {
 };
 
 const plotEl = document.getElementById("plot");
-const plotConfig = { responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage", "lasso3d", "select3d"], scrollZoom: true }; 
+const plotConfig = { responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage", "lasso3d", "select3d"], scrollZoom: true };
+let lastCamera = null;
+const cloneCamera = (cam) => cam ? JSON.parse(JSON.stringify(cam)) : null;
+const rememberCameraFromPlot = () => {
+  if (plotEl && plotEl._fullLayout && plotEl._fullLayout.scene && plotEl._fullLayout.scene.camera) {
+    lastCamera = cloneCamera(plotEl._fullLayout.scene.camera);
+  }
+};
 
 function setStatus(s) { els.status.textContent = s; }
 
@@ -801,6 +808,14 @@ async function computeField() {
   els.renderBtn.disabled = false;
 }
 
+function handleRelayout(ev) {
+  const keys = ev ? Object.keys(ev) : [];
+  if (keys.some(k => k.startsWith("scene.camera"))) rememberCameraFromPlot();
+  if (keys.includes("scene.dragmode") && lastCamera) {
+    Plotly.relayout(plotEl, {"scene.camera": lastCamera});
+  }
+}
+
 /* ========= Render ========= */
 function findNearestIndex(arr, target) {
   let best = 0;
@@ -817,8 +832,7 @@ function renderPlot() {
     setStatus("No data yet. Click 'Recompute field'.");
     return;
   }
-
-  const savedCamera = plotEl && plotEl._fullLayout && plotEl._fullLayout.scene ? plotEl._fullLayout.scene.camera : null;
+  const currentCamera = lastCamera || (plotEl && plotEl._fullLayout && plotEl._fullLayout.scene ? cloneCamera(plotEl._fullLayout.scene.camera) : null);
 
   const rho = payload.rho; // mm
   const z = payload.z;     // mm
@@ -940,13 +954,14 @@ function renderPlot() {
       xaxis: {title: "x (mm)"},
       yaxis: {title: "y (mm)"},
       zaxis: {title: "z (mm)"},
-      aspectmode: "data"
+      aspectmode: "data",
+      camera: currentCamera || undefined
     },
     uirevision: "rotor-b1"
   };
 
   Plotly.react(plotEl, [trace], layout, plotConfig).then(() => {
-    if (savedCamera) Plotly.relayout(plotEl, {"scene.camera": savedCamera});
+    rememberCameraFromPlot();
   });
   setStatus(`Rendered ${X.length} points (stride ${stride}).\nkey=${payload._key || "-"}`);
 }
@@ -972,7 +987,10 @@ els.segKpi.textContent = `Segments: ${els.nseg.value}`;
 els.cacheKpi.textContent = `Cache: ${els.cacheToggle.checked ? "on" : "off"}`;
 
 // initial empty plot
-Plotly.newPlot(plotEl, [], {title: {text:"No data yet. Click 'Recompute field'."}, uirevision: "rotor-b1"}, plotConfig);
+Plotly.newPlot(plotEl, [], {title: {text:"No data yet. Click 'Recompute field'."}, uirevision: "rotor-b1"}, plotConfig).then(() => {
+  rememberCameraFromPlot();
+  plotEl.on("plotly_relayout", handleRelayout);
+});
 </script>
 </body>
 </html>
