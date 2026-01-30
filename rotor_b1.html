@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>3D Rotor Inhomogeneity Renderer (Client-side)</title>
-  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts-gl@2.0.9/dist/echarts-gl.min.js"></script>
   <style>
     :root { color-scheme: light dark; --card-border: rgba(128,128,128,0.35); --soft-bg: rgba(128,128,128,0.10); }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 0; }
@@ -661,14 +662,34 @@ const els = {
 };
 
 const plotEl = document.getElementById("plot");
-const plotConfig = { responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage", "lasso3d", "select3d"], scrollZoom: true };
-let lastCamera = null;
-const cloneCamera = (cam) => cam ? JSON.parse(JSON.stringify(cam)) : null;
-const rememberCameraFromPlot = () => {
-  if (plotEl && plotEl._fullLayout && plotEl._fullLayout.scene && plotEl._fullLayout.scene.camera) {
-    lastCamera = cloneCamera(plotEl._fullLayout.scene.camera);
+let chart = null;
+let lastViewControl = null;
+
+function deepClone(obj) {
+  return obj ? JSON.parse(JSON.stringify(obj)) : null;
+}
+
+function rememberView() {
+  if (!chart) return;
+  const opt = chart.getOption();
+  if (opt && opt.grid3D && opt.grid3D[0] && opt.grid3D[0].viewControl) {
+    lastViewControl = deepClone(opt.grid3D[0].viewControl);
   }
-};
+}
+
+function getColorScale(name) {
+  const scales = {
+    Viridis: ["#440154", "#482878", "#3e4989", "#31688e", "#26828e", "#1f9e89", "#35b779", "#6ece58", "#b5de2b", "#fde725"],
+    Inferno: ["#000004", "#1b0c41", "#4a0c6b", "#781c6d", "#a52c60", "#cf4446", "#ed6925", "#fb9b06", "#f7d03c", "#fcffa4"],
+    Plasma: ["#0d0887", "#4b0c6b", "#781c6d", "#a52c60", "#cf4446", "#ed6925", "#fb9b06", "#f7d03c", "#f7ea54", "#fcffa4"],
+    Magma: ["#000004", "#1b0c41", "#4f0a6d", "#781c6d", "#a52c60", "#cf4446", "#ed6925", "#fb9b06", "#f7d03c", "#fcfdbf"],
+    Cividis: ["#00224e", "#233769", "#3f496d", "#5a5a6e", "#746b6d", "#8d7d67", "#a78f5f", "#c2a257", "#ddb553", "#f7d13d"],
+    Turbo: ["#30123b", "#3b1c80", "#3f2db3", "#4045d0", "#3858d2", "#2f6cc0", "#2c7faa", "#2b8f92", "#309c79", "#3da85f", "#52b44c", "#6cc03e", "#8acc36", "#acd42f", "#cddc2a", "#efe127", "#f7c62d", "#f6a636", "#f3853f", "#ee6447", "#e63c51", "#d71b5a", "#b80d66", "#8b0c70", "#5c126e"],
+    RdBu: ["#67001f", "#b2182b", "#d6604d", "#f4a582", "#fddbc7", "#f7f7f7", "#d1e5f0", "#92c5de", "#4393c3", "#2166ac", "#053061"],
+    Jet: ["#00007f", "#0000ff", "#007fff", "#00ffff", "#7fff7f", "#ffff00", "#ff7f00", "#ff0000", "#7f0000"]
+  };
+  return scales[name] || scales.Viridis;
+}
 
 function setStatus(s) { els.status.textContent = s; }
 
@@ -808,14 +829,6 @@ async function computeField() {
   els.renderBtn.disabled = false;
 }
 
-function handleRelayout(ev) {
-  const keys = ev ? Object.keys(ev) : [];
-  if (keys.some(k => k.startsWith("scene.camera"))) rememberCameraFromPlot();
-  if (keys.includes("scene.dragmode") && lastCamera) {
-    Plotly.relayout(plotEl, {"scene.camera": lastCamera});
-  }
-}
-
 /* ========= Render ========= */
 function findNearestIndex(arr, target) {
   let best = 0;
@@ -832,7 +845,7 @@ function renderPlot() {
     setStatus("No data yet. Click 'Recompute field'.");
     return;
   }
-  const currentCamera = lastCamera || (plotEl && plotEl._fullLayout && plotEl._fullLayout.scene ? cloneCamera(plotEl._fullLayout.scene.camera) : null);
+  const currentView = lastViewControl || (chart ? deepClone(chart.getOption().grid3D[0].viewControl) : null);
 
   const rho = payload.rho; // mm
   const z = payload.z;     // mm
@@ -934,35 +947,47 @@ function renderPlot() {
   else if (quantity === "re") title = "Re(B1+)";
   else title = "Im(B1+)";
 
-  const trace = {
-    type: "scatter3d",
-    mode: "markers",
-    x: X, y: Y, z: Z,
-    marker: {
-      size: markerSize,
-      opacity: opacity,
-      color: V,
-      colorscale: colorscale,
-      showscale: true,
-    }
-  };
+  const data = new Array(X.length);
+  for (let i=0; i<X.length; i++) data[i] = [X[i], Y[i], Z[i], V[i]];
 
-  const layout = {
-    title: {text: title},
-    margin: {l: 0, r: 0, t: 40, b: 0},
-    scene: {
-      xaxis: {title: "x (mm)"},
-      yaxis: {title: "y (mm)"},
-      zaxis: {title: "z (mm)"},
-      aspectmode: "data",
-      camera: currentCamera || undefined
+  const vmin = V.length ? Math.min(...V) : 0;
+  const vmax = V.length ? Math.max(...V) : 1;
+
+  const colorMap = getColorScale(colorscale);
+
+  const option = {
+    title: {text: title, left: "center", top: 10},
+    tooltip: {show: true, formatter: p => `x:${fmt(p.value[0])} y:${fmt(p.value[1])} z:${fmt(p.value[2])} v:${fmt(p.value[3])}`},
+    grid3D: {
+      boxWidth: 120,
+      boxDepth: 120,
+      boxHeight: 120,
+      viewControl: currentView || {projection: "perspective", autoRotate: false, zoomSensitivity: 1.2},
     },
-    uirevision: "rotor-b1"
+    xAxis3D: {name: "x (mm)"},
+    yAxis3D: {name: "y (mm)"},
+    zAxis3D: {name: "z (mm)"},
+    visualMap: {
+      type: "continuous",
+      dimension: 3,
+      min: vmin,
+      max: vmax,
+      calculable: true,
+      orient: "vertical",
+      right: 10,
+      top: 40,
+      inRange: {color: colorMap}
+    },
+    series: [{
+      type: "scatter3D",
+      data,
+      symbolSize: markerSize,
+      itemStyle: {opacity},
+    }]
   };
 
-  Plotly.react(plotEl, [trace], layout, plotConfig).then(() => {
-    rememberCameraFromPlot();
-  });
+  chart.setOption(option, true);
+  rememberView();
   setStatus(`Rendered ${X.length} points (stride ${stride}).\nkey=${payload._key || "-"}`);
 }
 
@@ -986,11 +1011,23 @@ updateDefaultsForProbe();
 els.segKpi.textContent = `Segments: ${els.nseg.value}`;
 els.cacheKpi.textContent = `Cache: ${els.cacheToggle.checked ? "on" : "off"}`;
 
-// initial empty plot
-Plotly.newPlot(plotEl, [], {title: {text:"No data yet. Click 'Recompute field'."}, uirevision: "rotor-b1"}, plotConfig).then(() => {
-  rememberCameraFromPlot();
-  plotEl.on("plotly_relayout", handleRelayout);
+// initial empty chart
+chart = echarts.init(plotEl, null, {renderer: "webgl", useDirtyRect: true});
+chart.setOption({
+  title: {text: "No data yet. Click 'Recompute field'.", left: "center", top: 10},
+  grid3D: {viewControl: {projection: "perspective"}},
+  xAxis3D: {name: "x (mm)"},
+  yAxis3D: {name: "y (mm)"},
+  zAxis3D: {name: "z (mm)"},
+  visualMap: {type: "continuous", dimension: 3, min: 0, max: 1, inRange: {color: ["#1f77b4", "#d62728"]}},
+  series: [{type: "scatter3D", data: [], symbolSize: 4}]
 });
+chart.on("datazoom", rememberView);
+chart.on("rendered", rememberView);
+chart.getZr().on("mousewheel", rememberView);
+chart.getZr().on("pinch", rememberView);
+chart.getZr().on("mouseup", rememberView);
+chart.getZr().on("touchend", rememberView);
 </script>
 </body>
 </html>
